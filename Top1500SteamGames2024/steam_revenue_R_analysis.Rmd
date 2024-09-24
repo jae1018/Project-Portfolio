@@ -1,0 +1,569 @@
+---
+title: "Steam_revenue_R_analysis"
+output: html_document
+date: "2024-09-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Import the necessary libraries
+```{r, message=FALSE}
+library(ggplot2)
+library(GGally)
+library(lubridate)
+library(DataExplorer)
+library(patchwork)
+library(dplyr) 
+library(car) # for levene
+library(ggpubr) # for ggqq
+library(rstatix) # for post-hoc welch
+```
+
+
+
+
+
+
+
+
+# Loading Data and Pre-processing
+
+We can simply load the dataset in as a .csv into an R dataframe.
+
+```{r}
+steam_revenue <- read.csv("steam_revenue_cleaned.csv", header = TRUE, sep = ",")
+summary(steam_revenue)
+```
+
+I didn't catch it in the SQL analysis, but there's a single point where the avgPlaytime is exactly 0.  The game (Elder Scrolls Gold Road) has a non-zero copiesSold, revenue, and reviewScore and had a release date in March 2024. It seems reasonable to set this value to NA instead of leaving it as 0.
+
+```{r}
+steam_revenue[1186,]$avgPlaytime = NA
+```
+
+To make the later plots cleaner, we should change the publisherClass from its inferred class type (str, or something to that end) to a categorical type (in R, that's called factor).
+
+```{r}
+steam_revenue$publisherClass <- 
+    factor( steam_revenue$publisherClass, levels = c("Indie", "AA", "AAA") )
+```
+
+There's a convenient function, plot_missing, from the DataExplorer library that can help quickly visualize the location and amount of missing data across a dataset. We break up the dataset by the 3 publisher classes and visualize the NAs in each.
+
+```{r}
+# Split the dataset by publisherClass
+steam_revenue_split <- split(steam_revenue, steam_revenue$publisherClass)
+# Capture the missing plots for each category in list
+plot_list <- lapply(names(steam_revenue_split), function(category) {
+  plot_missing(steam_revenue_split[[category]], title = paste("Missing Data for", category))
+})
+```
+
+Looks like there's an even proportion of reviewScores that are null across the publisher classes.
+
+
+## As is custom when exploring a dataset in R, let's make a *pairplot* over relevant features
+
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, message=FALSE}
+## Define consistent color palette
+color_palette <- c("Indie" = "#1b9e77", "AA" = "#d95f02", "AAA" = "#7570b3")
+
+## With original data scaling
+ggpairs(steam_revenue, 
+        aes(color = publisherClass, fill = publisherClass, alpha = 0.5),  # Set transparency and color mapping for classes
+        columns = c("revenue", "price", "copiesSold", "avgPlaytime", "reviewScore"),  # Specify relevant columns
+        lower = list(continuous = function(data, mapping, ...) {
+            ggplot(data = data, mapping = mapping) + 
+              geom_point(alpha = 0.3, size = 2, ...) +  # Add scatter plots with transparency
+              geom_smooth(method = "lm", se = FALSE, color = "black", size = 2.5, alpha = 0.5, ...) +  # Black outline
+              geom_smooth(method = "lm", se = FALSE, size = 1.2, alpha = 0.8, ...)  # Original line on top with transparency
+        }),
+        diag = list(continuous = ggally_densityDiag),  # Density plots for diagonal
+        upper = list(continuous = wrap(ggally_cor, method = "pearson", use = "complete.obs"))) +
+  scale_fill_manual(values = color_palette) +  
+  scale_color_manual(values = color_palette)
+```
+
+The copiessold, revenue, and avgPlaytime can get pretty skewed. Let's see what their log10 transform looks like compared to their original distributions.
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, message=FALSE}
+# Make cols for log10 transform
+steam_revenue$log10_revenue <- log10(steam_revenue$revenue)
+steam_revenue$log10_copiesSold <- log10(steam_revenue$copiesSold)
+steam_revenue$log10_avgPlaytime <- log10(steam_revenue$avgPlaytime)
+
+# Function to create violin plots with boxplots for both original and log-transformed data
+create_violin_pair <- function(df, original_col, log_col, title_original) {
+  # Original data violin plot
+  p1 <- ggplot(df, aes(x = publisherClass, y = !!sym(original_col), fill = publisherClass)) +
+    geom_violin(trim = FALSE, alpha = 0.7) +
+    geom_boxplot(width = 0.1, outlier.shape = 16, outlier.size = 2, alpha = 0.5, color = "black") +
+    scale_fill_manual(values = color_palette) +
+    labs(title = title_original, x='', y = 'Original') +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5))
+  
+  # Log-transformed data violin plot
+  p2 <- ggplot(df, aes(x = publisherClass, y = !!sym(log_col), fill = publisherClass)) +
+    geom_violin(trim = FALSE, alpha = 0.7) +
+    geom_boxplot(width = 0.1, outlier.shape = 16, outlier.size = 2, alpha = 0.5, color = "black") +
+    scale_fill_manual(values = color_palette) +
+    labs(x = "Publisher Class", y = 'Log10') +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  # Return the pair of plots (original and log-transformed) stacked vertically
+  return(p1 / p2)
+}
+
+# Call the function for revenue
+plot_revenue <- create_violin_pair(steam_revenue, 
+                                   original_col = "revenue", 
+                                   log_col = "log10_revenue",
+                                   title_original = "Revenue (dollars)")
+
+# Call the function for copiesSold
+plot_copiesSold <- create_violin_pair(steam_revenue, 
+                                      original_col = "copiesSold", 
+                                      log_col = "log10_copiesSold", 
+                                      title_original = "Copies Sold")
+plot_copiesSold <- plot_copiesSold & theme(axis.title.y = element_blank())
+
+
+# Call the function for avgPlaytime
+plot_avgPlaytime <- create_violin_pair(steam_revenue, 
+                                       original_col = "avgPlaytime", 
+                                       log_col = "log10_avgPlaytime",
+                                       title_original = "Avg Playtime (hours)")
+plot_avgPlaytime <- plot_avgPlaytime & theme(axis.title.y = element_blank())
+
+# Stitch the three pairs horizontally using patchwork
+final_plot <- plot_revenue | plot_copiesSold | plot_avgPlaytime
+
+# Display the final plot
+final_plot
+```
+
+The log10's look a lot more tenable. Let's recreate the pairplot but using the log10 for copiesSold, revenue, and avgPlaytime instead.
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, message=FALSE}
+##### With original data scaling
+ggpairs(steam_revenue, 
+        aes(color = publisherClass, fill = publisherClass, alpha = 0.5),  # Set transparency and color mapping for classes
+        columns = c("log10_revenue", "price", "log10_copiesSold", "log10_avgPlaytime", "reviewScore"),  # Specify relevant columns
+        lower = list(continuous = function(data, mapping, ...) {
+            ggplot(data = data, mapping = mapping) + 
+              geom_point(alpha = 0.3, size = 2, ...) +  # Add scatter plots with transparency
+              geom_smooth(method = "lm", se = FALSE, color = "black", size = 2.5, alpha = 0.5, ...) +  # Black outline
+              geom_smooth(method = "lm", se = FALSE, size = 1.2, alpha = 0.8, ...)  # Original line on top with transparency
+        }),
+        diag = list(continuous = ggally_densityDiag),  # Density plots for diagonal
+        upper = list(continuous = wrap(ggally_cor, method = "pearson", use = "complete.obs"))) + 
+  scale_fill_manual(values = color_palette) +  
+  scale_color_manual(values = color_palette)
+```
+
+Some immediate observations from the log10 pairplots indicate that
+
+1. reviewScore seems quite independent of the other features - which means that trying to predict it as a function of the others may be challenging.
+
+2. The distribution of log10_avgPlaytime for AAA and AA overlap a lot but both are shifted away from Indie.
+
+3. The linear trend of log10 revenue as a function of price differs by publisher class.
+
+4. log10 revenue is strongly linearly correlated with log10 copies sold (shocker).
+
+5. log10 copiesSold seems to be similarly linearly related to log10 avgPlaytime aross publisherClass (although the Indie pearson correlation in the upper diagonal is about 0.3 where the other 2 are >= 0.5).
+
+Also, the smoothed KDE of the histograms over the smaller AAA class can make it harder to see extrema (since the histograms are plotted by density). Let's plot the continuous features as boxplots for each publisher class as well to get a better look.
+
+```{r}
+box_cols <- c("log10_revenue", "price", "log10_copiesSold",
+             "log10_avgPlaytime", "reviewScore",'publisherClass')
+plot_boxplot(steam_revenue[, box_cols], 
+             by = "publisherClass",
+             geom_boxplot_args = list(outlier.alpha = 0.5))
+```
+
+
+
+
+
+
+# Questions
+
+We can now ask (and more precisely validate) some statistical questions:
+
+1. **Are their statistically significant differences in avgPlaytime by publisherClass?**
+
+2. **Does a higher price guarantee higher revenue in general? Does it vary across publisher classes?**
+
+3. The prior SQL analysis revealed that there are developers who have made multiple games and those who have made only one (referring to the games in this dataset only). **Are there any significant statistical differences in reviewScore between these two groups?**
+
+
+7. Given only the price, revenue, and avgPlaytime, could we reliably predict which publisherClass the game belongs to? --  save this for python with different ML classif models ---
+
+
+
+
+
+
+
+## Q1 : Are the difference in means of the avgPlaytime statistically significant by publisherClass? 
+The standard approach for this would be to use a 3-group one-way ANOVA test, the requirements being that for each group in the data ... (1) the residuals are normally distributed, (2) the groups exhibit similar variances (homoskedasticity), and (3) the data are independent of each other. The most sacrosanct of these, the i.i.d. assumption of point 3, is not completely true here. Players have finite amounts of time and will have competing interests about what game to play, making games competing for player engagement a zero-sum game. However, we will proceed as if this is not the case. We will check points (1) and (2) usings some plot diagnostics. We'll look at the qqplots by publisher class for both the original avgPlaytime column as well as the log10 transform (although it's pretty easy to anticipate that the latter will perform considerably better)
+
+```{r}
+## Plot avgPlaytime
+p1 <- ggqqplot(steam_revenue, 'avgPlaytime', color='publisherClass')
+p1 <- p1 + labs(title='avgPlaytime') + theme(plot.title = element_text(hjust = 0.5), legend.position='right')
+p1
+## Plot log10 avgPlaytime
+p1 <- ggqqplot(steam_revenue, 'log10_avgPlaytime', color='publisherClass')
+p1 <- p1 + labs(title='log10 avgPlaytime') + theme(plot.title = element_text(hjust = 0.5), legend.position='right')
+p1
+```
+
+Point (1) is clearly not satisfied for the original avgPlaytime while the log10 transform looks a lot more promising. For the latter, the AA and AAA residuals are very well within the std error envelope, the Indie residuals flare out at the tails. This reflects what we saw in the log10_avgPlaytime boxplot with both the lowest and largest values belonging to the Indie class, so much that it had a notable number of large outliers. The assumption of point (1) becomes more flexible with the number of points and since there are about 1,300 of them, we'll accept this as a moderate (and forgivable) deviation from normality. We'll now check if point (2) holds using plots and a parametric test (Levene's, not Bartlett's since the class sizes are uneven)
+
+```{r}
+print( leveneTest(log10_avgPlaytime ~ publisherClass, data = steam_revenue) )
+```
+
+And with a significance level of 0.05, the null hypothesis assumed with Levene's test is rejected in favor the the alternative. That is, the groups (1 or more) within this data do not have equal variances, meaning our data is not homoskedastic. So since point (2) cannot be assumed and we have uneven class sizes, we'll use Welch's ANOVA instead of the classic one-way ANOVA.
+
+```{r}
+print( oneway.test(log10_revenue ~ publisherClass, data = steam_revenue, var.equal = FALSE) )
+```
+
+The p-value of Welch's ANOVA indicates that the means between the groups are not the same but it does not tell us *which* group or how many ones with varying means there are. To estimate that, we need to do a post-hoc test. For classic ANOVA, such a test would be Tukey's HSD, but the generalized version for Welch's is the Games-Howell test (available through the rstatix library). We show the results of the test below.
+
+```{r}
+print( games_howell_test(log10_avgPlaytime ~ publisherClass, data=steam_revenue) )
+```
+
+The Games-Howell test indicates that there is a statistically significant difference in the Indie population from both AA and AAA but not between AA and AAA. The difference in means between Indie and AA is 0.221 with a 95% CI being (0.142,0.299) and between Indie and AAA is 0.281 with a 95% CI being (0.166, 0.396). Since the avgPlaytime was log10 transformed to this perform this statistical test, this means that we need to use the antilog ($10^x$) to intepret it. Exponentiating the differences and confidence intervals, a game published by an AA publisher has a $10^{0.142}\sim  1.39$ to $10^{0.299} \sim 1.99$ times higher avgPlaytime than a game published by an Indie publisher (or $10^{0.221} \sim 1.66$ times on average). This is even higher for the AAA publishers where the CI gives a $10^{0.166} \sim 1.47$ to $10^{0.396} \sim 2.49$ times higher, or $10^{0.281} \sim 1.91$ times on average. These estimates should be interpreted with the reminder that we were lax with the assumption of point (1) for the Indie distribution and that the same distribution had many of the largest average playtimes in the dataset, so the true increases in average playtime for AA and AAA relative to Indie are likely to be slightly lower than seen here.
+
+### Q1 Answer : Games published by AA will experience 1.66 times higher average playtime than a game published by an Indie publisher. For AAA relative to Indie, this climbs to 1.91 times. The difference in average playtimes between games published by AAA vs AA publishers is statistically inconclusive. This interpretation was generous in assuming normality for the Indie residual distribution so the true factor increase is likely to be slightly lower.
+
+
+
+
+
+
+
+
+
+
+## Q2 : Does a higher price guarantee higher revenue in general? Does it vary across publisher classes?
+
+We can see from the price - log10 revenue plot that there's a trend between the two across publisher classes. However, this data includes games priced at $0, which could either be pay-what-you-want or simply free (with revenue possible based on in-game transactions). Let's mask out the \$0 price games and see how it varies as a result along with the spearman and pearson correlation.
+
+```{r, message=FALSE, warnings=FALSE, fig.width=8, fig.height=4}
+
+free <- steam_revenue[which(steam_revenue$price == 0),]
+not_free <- steam_revenue[which(steam_revenue$price > 0),]
+
+## Number not free by pubClass
+print( table(not_free$publisherClass) )
+## % not free by pubClass
+print( table(not_free$publisherClass) / table(steam_revenue$publisherClass) )
+
+## Plot of linear revenue as func of price
+p1 <- ggplot(steam_revenue, aes(x = price, y = log10_revenue, fill=publisherClass, color = publisherClass)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", size = 2.5, alpha = 0.5) +  # Black outline
+    geom_smooth(method = "lm", se = FALSE, size = 1.2, alpha = 0.8) +  # Original line on top with transparency +
+    scale_fill_manual(values = color_palette) +
+    labs(x = "Price",
+         y = "Log10 Revenue",
+         title = 'All') +
+    theme_minimal() +
+    theme(legend.position="none",
+          plot.title = element_text(hjust = 0.5))
+
+p2 <- ggplot(not_free, aes(x = price, y = log10_revenue, fill=publisherClass, color = publisherClass)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", size = 2.5, alpha = 0.5) +  # Black outline
+    geom_smooth(method = "lm", se = FALSE, size = 1.2, alpha = 0.8) +  # Original line on top with transparency +
+    scale_fill_manual(values = color_palette) +
+    labs(x = "Price",
+         y = element_blank(),
+         title = 'Price > $0') +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+
+price_rev_plot <- p1 | p2
+price_rev_plot
+
+## Now show the spearman and pearson corr across groups for original and not-free
+corr_all <- steam_revenue %>%
+  group_by(publisherClass) %>%
+  summarise(
+    pearson_corr = cor(log10_revenue, price, method = 'pearson'),
+    spearman_corr = cor(log10_revenue, price, method = 'spearman')
+  )
+print( corr_all )
+
+corr_not_free <- not_free %>%
+  group_by(publisherClass) %>%
+  summarise(
+    pearson_corr = cor(log10_revenue, price, method = 'pearson'),
+    spearman_corr = cor(log10_revenue, price, method = 'spearman')
+  )
+print( corr_not_free )
+
+```
+
+The pearson ('linear correlations') and spearman ('rank correlations') all increase as a result of removing the free games from the dataset, but the effect seems the most pronounced for the AAA class. When we removed the free games, we reduced the number of Indie and AA games by only 6% and 2%, but the number of AAA games was reduced by almost 13%. It is not that surprising that AAA has the most free games as the economic model of creating a free-to-play game and then generating profit via in-game transactions is usually only sustainable at scale with significant resources (think of League of Legends, Fortnite, etc). Based on the plots and the correlations, we will probably have the most success with modeling log10 revenue as a function of price for AAA but less so for AA and Indie. Let's take the previous plot of log10 revenue vs price and make separate plots based on publisher class and some linear regression models that accounts for both price and publisher class and then compare that to a linear model on a class-by-class basis.
+
+```{r, message=FALSE, warnings=FALSE, fig.width=12, fig.height=4}
+
+## Break up not_free by publisher class
+not_free_indie <- not_free[which(not_free$publisherClass == 'Indie'),]
+not_free_aa <- not_free[which(not_free$publisherClass == 'AA'),]
+not_free_aaa <- not_free[which(not_free$publisherClass == 'AAA'),]
+
+
+## Define func to make similar plot
+plot_logrev_vs_price_pc <- function(df, pc) {
+  p1 <- ggplot(df, aes(x = price, y = log10_revenue)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", size = 2.5, alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE, size = 1.2, alpha = 0.8) +
+    labs(x = "Price",
+         y = "Log10 Revenue",
+         title = pc) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+  return(p1)
+}
+
+## Make plots
+indie_plot <- plot_logrev_vs_price_pc(not_free_indie, 
+                                      pc = "Indie")
+
+aa_plot <- plot_logrev_vs_price_pc(not_free_aa, 
+                                    pc = "AA")
+aa_plot <- aa_plot & theme(axis.title.y = element_blank())
+
+aaa_plot <- plot_logrev_vs_price_pc(not_free_aaa, 
+                                    pc = "AAA")
+aaa_plot <- aaa_plot & theme(axis.title.y = element_blank())
+
+## Make sure plots have same x and y ranges
+xbounds_ = c(0,100)
+ybounds_ = c( min(not_free$log10_revenue), max(not_free$log10_revenue) )
+indie_plot <- indie_plot + coord_cartesian(xlim = xbounds_, ylim = ybounds_)
+aa_plot <- aa_plot + coord_cartesian(xlim = xbounds_, ylim = ybounds_)
+aaa_plot <- aaa_plot + coord_cartesian(xlim = xbounds_, ylim = ybounds_)
+
+## Horizontally stack and show
+total_plot <- indie_plot | aa_plot | aaa_plot
+total_plot
+
+```
+
+
+Now let's build the linear models and compare:
+
+```{r, message=FALSE, warnings=FALSE, fig.width=8, fig.height=8}
+
+## Build a linear model that uses both price and publisher class as input variables ...
+lrev_price_pc <- lm(log10_revenue ~ price + publisherClass, data = not_free)
+summary(lrev_price_pc)
+layout(matrix(c(1,2,3,4),2,2))  # make plots show as 2x2
+plot(lrev_price_pc)
+
+## Then make a linear model for each publisher class to compare R2
+model_indie <- lm(log10_revenue ~ price, data = not_free_indie)
+summary(model_indie)
+plot(model_indie)
+
+model_aa <- lm(log10_revenue ~ price, data = not_free_aa)
+summary(model_aa)
+plot(model_aa)
+
+model_aaa <- lm(log10_revenue ~ price, data = not_free_aaa)
+summary(model_aaa)
+plot(model_aaa)
+confint(model_aaa)
+
+## reset layout for later plots
+par(mfrow = c(1, 1))
+```
+
+
+The model incorporating price and publisher class as well as the individual models for Indie and AA show statistical significance in both the p-value of the F-statistic and for all the coefficients... but the adjusted R-squared's are quite poor (R2 = 0.25, 0.10, and 0.16 for the total, Indie, and AA models). The total model is clearly not homoscedastic on the lower end and the residuals are quite over-dispersed at the tails. Looking at the Indie model reveals that this relationship is largely owed to the Indie class as it exhibits much of these characteristics. The AA model behaves better and shows more normally-distributed residuals along the middle but the tail residuals are still quite over-dispersed. The AAA model shows much better adjusted R-squared (0.47) and normally-distributed residuals (barring two outliers belonging to points 1,450 and 1,451) but there are also fewer points involved (43 points versus 143 and 1,228 for AA and Indie). 
+
+Overall, we can state that 
+
+1. The poor R2 of the Indie and AA models indicate that price is insufficient in explaining the variance in the log10 revenue distribution. It is true from the plots and the spearman and pearson correlations that there is a positive relationship between increases in price and increases in log10 revenue, but it likely cannot be quantified as a response of price alone.
+
+2. The AAA model is more trustworthy (but not certainly) as the R2 is almost 0.5 with the presence of two notable outliers. Based on the coefficient for the price, the log10 of the revenue increases by a additive amount of $0.0316$ per dollar increase in price (or in original terms, the revenue increases by a factor of $10^{0.0316} \sim 1.075$ per dollar increase). The 95% confidence interval on the coefficient indicates an additive increase between 0.0214 to 0.0419 (or multiplicative increase in revenue of $10^{0.0214} \sim 1.05$ to $10^{0.0419} \sim 1.10$) This means that an AAA publisher could more reliably increase the price to leverage getting a higher revenue than and Indie or AA publisher could.
+
+### Q2 Answer : There is a general positive relationship between increasing price and increasing revenue but it varies by publisher.  For Indie and AA publishers, price alone is statistically insufficient in quantifying the revenue increase but the revenue increase per dollar seems to be stronger for AA publishers over Indie. For AAA publishers, the relationship is more reliable with an estimated 1.075 times increase in revenue per dollar increase in price with an R2 of 0.5.
+
+
+
+
+
+
+
+
+
+
+
+## Q3 : Is there any significant statistical differences in reviewScore between developers who created only one game and developers who created multiple?
+
+First we need to create an additional feature - 'multipleGamesByDeveloper' which will have the value 'multiple' if developer has made multiple games in this dataset, and 'one' otherwise.
+
+```{r}
+# Get developer name counts as table
+dev_counts <- table(steam_revenue$developers)
+# make extra feature - "multiple" if developer name appears more than once, otherwise "one"
+steam_revenue$multipleGamesByDeveloper <- 
+    ifelse(steam_revenue$developers %in% names(dev_counts[dev_counts > 1]), 
+           "multiple",
+           "one")
+```
+
+Now let's analyze the distributions of reviewScore according to this new feature, first by numerics ...
+
+```{r}
+# Get counts first with summarize
+multGamesByDevel_table <- 
+  steam_revenue %>%
+    group_by(multipleGamesByDeveloper) %>%
+    summarize(min = min(reviewScore, na.rm = TRUE),
+              max = max(reviewScore, na.rm = TRUE),
+              med = median(reviewScore, na.rm = TRUE),
+              mean = mean(reviewScore, na.rm = TRUE),
+              std = sqrt(var(reviewScore, na.rm = TRUE)),
+              count = n())
+# Forcing it to print all cols and rows
+print(multGamesByDevel_table, n = Inf, width = Inf)
+```
+
+... And then also visually with a boxplot and histogram.
+
+```{r, fig.width=8, fig.height=4}
+## Boxplots
+boxplot_reviewScore <- ggplot(steam_revenue, aes(x = multipleGamesByDeveloper, y = reviewScore)) +
+  geom_boxplot() +
+  labs(x = "Developer Group")
+## Normalized histograms overlaid for "one" and "multiple" developer groups
+hist_reviewScore <- ggplot(steam_revenue, aes(x = reviewScore, fill = multipleGamesByDeveloper)) +
+  geom_histogram(aes(y = after_stat(density)), alpha = 0.5, position = "identity", bins = 30) +
+  theme_minimal() +
+  theme(legend.position = "top")
+## Stitch together
+combined_plot <- boxplot_reviewScore + hist_reviewScore
+combined_plot
+```
+
+Being a review score, this feature has strict ranges (0 to 100) so playing around with transforms to get something nicer might be more difficult than a simple log10. Not only that, but the class sizes are pretty different as well with 1,348 being "one" and 151 being "multiple". We'll use permutation testing as a more robust method t answer our question.
+
+Permutation testing allows us to test the hypothesis that the mean review scores between developers who have made only one game ('one') and those who have made multiple games ('multiple') are statistically different, without making strict assumptions about the distribution of the data. This approach is distribution-free, meaning it does not rely on assumptions like normality, which may be difficult to achieve with our review score data. This requires that we calculate a statistic, here being the difference in means between "one" and "multiple" and permute the labels in our dataset. We can use this method to see if the differences in the mean is due to chance or is statistically significant.
+
+```{r}
+## Extract only the rows with defined reviewScore
+not_na_reviewScore <- steam_revenue[complete.cases(steam_revenue$reviewScore),]
+
+## Break into "one" and "multiple" groups
+one_game_group <- not_na_reviewScore$reviewScore[not_na_reviewScore$multipleGamesByDeveloper == "one"]
+multiple_games_group <- not_na_reviewScore$reviewScore[not_na_reviewScore$multipleGamesByDeveloper == "multiple"]
+
+## Calculate the observed difference in mean reviewScore for both groups
+mean_one_game <- mean(one_game_group)
+mean_multiple_games <- mean(multiple_games_group)
+observed_diff <- mean_one_game - mean_multiple_games
+
+## Permutate labels and calc mean for both groups
+num_perm <- 100*1000
+perm_diffs <- numeric(num_perm)
+for (i in 1:num_perm) {
+  # shuffle
+  shuffled_labels <- sample(not_na_reviewScore$multipleGamesByDeveloper)
+  # calc mean in both groups
+  perm_mean_one_game <- mean(not_na_reviewScore$reviewScore[shuffled_labels == "one"])
+  perm_mean_multiple_games <- mean(not_na_reviewScore$reviewScore[shuffled_labels == "multiple"])
+  # calc diff in means
+  perm_diffs[i] <- perm_mean_one_game - perm_mean_multiple_games
+}
+```
+
+Having generated a large number of difference in the mean based on the permutation of the labels, we can calculate how many sample go beyond the observed difference (that is, the difference between the mean of the review scores for the "one" group and the mean of the review scores for the "multiple" group). The proportion that exeeds this threshold is our p-value. It's important to generate many permutations to increase the accuracy, so we run it here 100*1000 times (perhaps slightly overkill).
+
+```{r}
+## Calc p-value
+num_gte_obs_diff = abs(perm_diffs) >= abs(observed_diff)
+p_value <- mean( num_gte_obs_diff )
+cat('Only',sum(num_gte_obs_diff),'out of',num_perm,'>=',abs(observed_diff))
+cat('--> p-value = ',p_value)
+## Plot diffs along with p-value
+hist(perm_diffs, breaks = 30)
+abline(v = observed_diff, col = "red", lwd = 2)
+```
+
+With such a low-value, we accept the alternative hypothesis that the difference in mean review scores between the "one" and "multiple" groups is statistically significant. We could have also answered this question by generating bootstrapping as well, which we do below to demonstrate. This will have the added benefit of generating a condfidence interval on the difference in means as well.
+
+```{r}
+num_boot = 100*1000
+
+# Initialize vectors to store bootstrapped means
+boot_means_one <- numeric(num_boot)
+boot_means_multiple <- numeric(num_boot)
+
+# Perform bootstrapping
+for (i in 1:num_boot) {
+  ## Resample with replacement
+  boot_sample_one <- sample(one_game_group, size = length(one_game_group), replace = TRUE)
+  boot_sample_multiple <- sample(multiple_games_group, size = length(multiple_games_group), replace = TRUE)
+  ## Calculate bootstrapped means
+  boot_means_one[i] <- mean(boot_sample_one)
+  boot_means_multiple[i] <- mean(boot_sample_multiple)
+}
+
+# Calculate the observed difference in means
+observed_diff_boot <- mean(one_game_group) - mean(multiple_games_group)
+
+# Calculate confidence intervals (percentile method)
+ci_one <- quantile(boot_means_one, c(0.025, 0.975))
+ci_multiple <- quantile(boot_means_multiple, c(0.025, 0.975))
+
+# Calculate the difference in bootstrapped means for CI
+boot_diff <- boot_means_one - boot_means_multiple
+ci_diff <- quantile(boot_diff, c(0.025, 0.975))
+```
+
+```{r, fig.width=10, fig.height=4}
+par(mfrow = c(1, 3))  # 1 row, 3 columns
+# Plot histogram for the "one" group
+hist(boot_means_one, main = "one")
+abline(v = mean(one_game_group), col = "red", lwd = 2)
+abline(v = ci_one[1], col = "red", lwd = 1, lty=2)
+abline(v = ci_one[2], col = "red", lwd = 1, lty=2)
+# Plot histogram for the "multiple" group
+hist(boot_means_multiple, main = "multiple")
+abline(v = mean(multiple_games_group), col = "red", lwd = 2)
+abline(v = ci_multiple[1], col = "red", lwd = 1, lty=2)
+abline(v = ci_multiple[2], col = "red", lwd = 1, lty=2)
+# Plot histogram for the difference in means
+hist(boot_diff, main = "mean(one) - mean(multiple)")
+abline(v = observed_diff_boot, col = "red", lwd = 2)
+abline(v = ci_diff[1], col = "red", lwd = 1, lty=2)
+abline(v = ci_diff[2], col = "red", lwd = 1, lty=2)
+# reset
+par(mfrow = c(1, 1))
+
+## Print CI for mean diff
+print(ci_diff)
+```
+
+It can be seen from the plots that the confidence interval on the difference in means does not include 0. This reaffirms the results of the permutation test and additionally shows that the average review score for the "one" group is higher than that of the "multiple" group by about 1 to 5 points (95% CI).
+
+### Q3 Answer - A permutation test confirmed that there is a statistically significant difference in average review scores for games that are made by developers who only made one game versus those who made multiple (as evaluated within this dataset). A subsequent bootstrapping analysis revealed that the "one" group has higher mean review scores by 1 to 5 points (95% CI) than the "multiple" group.
