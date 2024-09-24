@@ -8,7 +8,7 @@ This folder contains the original dataset taken straight from Kaggle (https://ww
 
 4. steam_revenue_R_analysis.Rmd - R markdown document detailing the proper statistical analysis of the cleaned dataset in R.
 
-5. steam_revenue_R_analysis.html - html document generated from the *.Rmd file in R Studio. If you want to read through the statistical analysis results with plots, look at this.
+5. steam_revenue_R_analysis.pdf - PDF version of the HTML document generated from the *.Rmd file in R Studio. If you want to read through the statistical analysis results with plots, look at this.
 
 6. Steam_sales_ML_prediction.ipynb - Jupyter notebook that trains linear, ML, and ensemble-ML models in order to predict publisher class using only revenue, price, and average playtime per game.
 
