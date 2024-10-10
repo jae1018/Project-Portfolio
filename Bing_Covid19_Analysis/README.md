@@ -9,3 +9,5 @@ ny_df.csv - The Covid statistics by counties of New York (used with the Tableau 
 us_df.csv - The national-level covid statistics for the United States (used in the imputation notebook).
 
 A Tableau dashboard of this dataset can be found on the Tableau Public server at https://tinyurl.com/53r3d79e.
+
+![A screenshot of a tableau dashboard showing monthly covid statistics in counties of New York in July 2022.](images/tableau_nycounties_full_july2022.png.png)
