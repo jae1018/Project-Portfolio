@@ -9,3 +9,5 @@ austintx_powerbi.pbix - The Power BI file for the report (screenshots shown at t
 AustinTX_KPrototypesAndAgglomClust.ipynb - Jupyter Notebook made using Azure Synapse Analytics. Uses K-Prototypes, Gower's distance, and Hierarchical Agglomerative clustering to cluster the data using the budgets and expenditures of the logs.
 
 kproto_20.pkl - Pickled instance of the trained K-Prototypes model using kmodes version 0.12.2.
+
+![A screenshot of a tableau dashboard showing budgets and expenditures of various public departments of Austin, TX.](plots/powerbi_original.png)
