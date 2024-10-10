@@ -13,3 +13,5 @@ This folder contains the original dataset taken straight from Kaggle (https://ww
 6. Steam_sales_ML_prediction.ipynb - Jupyter notebook that trains linear, ML, and ensemble-ML models in order to predict publisher class using only revenue, price, and average playtime per game.
 
 A Tableau dashboard of this dataset can be found on the Tableau Public server at https://tinyurl.com/3f3yyydu.
+
+![A screenshot of a tableau dashboard showing differences in various statistics by publisher classes for steam sales in 2024.](images/tableau_steamanalysis_screenshot.png)
